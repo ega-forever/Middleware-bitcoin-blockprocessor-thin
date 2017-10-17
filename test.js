@@ -12,7 +12,7 @@ let client = new bitcoin.Client({
 
 let init = async () => {
 
-  let blockHash = await client.getBlockHashAsync(4110).catch(() => Promise.reject({code: 0}));
+  let blockHash = await client.getBlockHashAsync(4110).catch((e) => console.log(e));
   let block = await client.getBlockAsync(blockHash);
   //let rawTxs = await Promise.mapSeries(block.tx, tx => client.getRawTransactionAsync(tx, 1));
   //let rawTxs = await Promise.mapSeries(block.tx, tx => client.getRawTransactionAsync(tx, 1));
@@ -22,57 +22,71 @@ let init = async () => {
     params: [tx, 1]
   }));
 
-  let rawTxs = await new Promise(res => {
-    let counter = 0;
-    let result = [];
-    client.cmd(batch, function (err, data) {
-      counter++;
-      if (err) return console.log(err);
-      result.push(data);
-      if (counter === batch.length)
-        res(result);
-    });
-  });
+  let rawTxs = await Promise.mapSeries(
+    _.chunk(batch, 10),
+    chunk =>
+      new Promise(res => {
+        let counter = 0;
+        let result = [];
+        client.cmd(chunk, function (err, data) {
+          counter++;
+          if (!err)
+            result.push(data);
+          if (counter === chunk.length)
+            res(result);
+        });
+      })
+  );
 
-  console.log(rawTxs.length);
+  rawTxs = _.flattenDeep(rawTxs);
 
+  let inputs = _.chain(rawTxs)
+    .map(tx => tx.vin)
+    .flattenDeep()
+    .reject(vin => _.has(vin, 'coinbase'))
+    .value();
 
+  console.log(inputs.length);
 
+  let batch2 = inputs.map(input => ({
+    method: 'getrawtransaction',
+    params: [input.txid, 1]
+  }));
 
-  for (let s = 0; s < rawTxs.length; s++) {
-    console.log(s)
-    let batch = _.chain(rawTxs[s].vin)
-      .filter(v => v.txid)
-      .map(v=>({
-        method: 'getrawtransaction',
-        params: [v.txid, 1]
-      }))
-      .value();
+  let inputTxs = await Promise.mapSeries(
+    _.chunk(batch2, 5),
+    chunk =>
+      new Promise(res => {
+        let counter = 0;
+        let result = [];
+        client.cmd(chunk, function (err, data) {
+          counter++;
+          if (!err)
+            result.push(data);
+          if (counter === chunk.length) {
+            res(result);
+            console.log('chunk accomplished');
+          }
+        });
+      })
+  );
 
-
-    rawTxs[s].vin = await new Promise(res => {
-      let counter = 0;
-      let result = [];
-
-
-
-
-
-      client.cmd(batch, function (err, data) {
-        counter++;
-        if (err) return console.log(err);
-        result.push(data);
-        if (counter === batch.length)
-          res(result);
-      });
-    });
-
-
-
-  }
+  inputTxs = _.flattenDeep(inputTxs);
 
   let addresses = _.chain(rawTxs)
-    .map(tx => _.union(tx.vin, tx.vout))
+    .map(tx =>
+      _.chain(tx.vin)
+        .filter(vin => vin.txid)
+        .map(vin => {
+          console.log(vin.txid);
+          console.log(inputTxs[0]);
+          let tx = _.find(inputTxs, {hash: vin.txid});
+          //console.log(tx)
+          return tx.vout[vin.vout];
+        })
+        .union(tx.vout)
+        .value()
+    )
     .flattenDeep()
     .map(v => v.scriptPubKey.addresses)
     .flattenDeep()
@@ -100,7 +114,7 @@ let init = async () => {
     }))
     .value();
 
-  console.log(out)
+  console.log(out);
 
 };
 
